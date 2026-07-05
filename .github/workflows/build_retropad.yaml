@@ -1,0 +1,35 @@
+name: Build RetroPad (external source)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout this automation repo
+        uses: actions/checkout@v4
+
+      - name: Clone RetroPad source
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/PlummersSoftwareLLC/retropad.git src
+          git -C src log -1 --oneline
+
+      # MSVC toolchain is already present on windows-latest
+      - name: Build with MSVC nmake
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cd src
+          nmake
+
+      - name: Upload binaries/artifacts (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: retropad-build
+          path: |
+            src\*.exe
+            src\build\**
+          if-no-files-found: warn
