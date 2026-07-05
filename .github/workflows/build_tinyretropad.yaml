@@ -30,8 +30,7 @@ jobs:
       - name: Install MASM32 SDK (include and lib files)
         shell: pwsh
         run: |
-          $zipPath = "$env:TEMP\masm32.zip"
-          Invoke-WebRequest -Uri 'https://masm32.com/download/masm32v11r.zip' -OutFile $zipPath
+          $zipPath = "${{ github.workspace }}\tools\masm32v11r.zip"
           $dlDir = "$env:TEMP\masm32_dl"
           Expand-Archive -Path $zipPath -DestinationPath $dlDir
           # The zip contains install.exe - an InnoSetup self-installer
