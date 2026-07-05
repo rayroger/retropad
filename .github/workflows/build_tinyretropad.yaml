@@ -38,75 +38,43 @@ jobs:
             exit 1
           }
 
-          function Install-MasmOnce {
-            $dlDir = Join-Path $env:TEMP ('masm32_dl_' + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $dlDir | Out-Null
+          $dlDir = Join-Path $env:TEMP 'masm32_dl'
+          New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $dlDir -Force
 
-            Expand-Archive -Path $zipPath -DestinationPath $dlDir -Force
+          # The zip contains install.exe - an InnoSetup self-installer
+          $installer = Get-ChildItem -Path $dlDir -Filter 'install*.exe' -Recurse | Select-Object -First 1
+          if (-not $installer) {
+            throw 'Could not find MASM32 installer inside downloaded zip'
+          }
 
-            # The zip contains install.exe - an InnoSetup self-installer
-            $installer = Get-ChildItem -Path $dlDir -Filter 'install*.exe' -Recurse | Select-Object -First 1
-            if (-not $installer) {
-              throw 'Could not find MASM32 installer inside downloaded zip'
-            }
+          # Use 7-Zip to extract the InnoSetup package directly rather than running
+          # the interactive installer, which hangs in headless CI environments.
+          $7z = 'C:\Program Files\7-Zip\7z.exe'
+          if (-not (Test-Path $7z)) {
+            throw '7-Zip not found; cannot extract MASM32 SDK'
+          }
 
-            $logPath = Join-Path $env:TEMP 'masm32-install.log'
-            if (Test-Path $logPath) { Remove-Item $logPath -Force }
+          New-Item -ItemType Directory -Path 'C:\masm32' -Force | Out-Null
+          & $7z x $installer.FullName -o'C:\masm32' -y | Out-Null
 
-            $args = @(
-              '/VERYSILENT'
-              '/SUPPRESSMSGBOXES'
-              '/NORESTART'
-              '/DIR=C:\masm32'
-              "/LOG=$logPath"
-            )
-
-            $p = Start-Process -FilePath $installer.FullName -ArgumentList $args -PassThru
-
-            # Hard timeout to prevent indefinite hangs
-            $timeoutSec = 600
-            if (-not (Wait-Process -Id $p.Id -Timeout $timeoutSec -ErrorAction SilentlyContinue)) {
-              Write-Warning "MASM installer timed out after $timeoutSec seconds (PID=$($p.Id))."
-              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-              if (Test-Path $logPath) {
-                Write-Host '--- MASM installer log (tail) ---'
-                Get-Content $logPath -Tail 200
-              }
-              throw "MASM installer timeout after $timeoutSec seconds"
-            }
-
-            if ($p.ExitCode -ne 0) {
-              if (Test-Path $logPath) {
-                Write-Host '--- MASM installer log (tail) ---'
-                Get-Content $logPath -Tail 200
-              }
-              throw "MASM installer exited with code $($p.ExitCode)"
-            }
-
-            # Verify install output
-            if (-not (Test-Path 'C:\masm32\include')) {
-              if (Test-Path $logPath) {
-                Write-Host '--- MASM installer log (tail) ---'
-                Get-Content $logPath -Tail 200
-              }
-              throw 'MASM32 include directory not found after install'
+          # 7-Zip may place InnoSetup app files under a subdirectory; normalise if needed
+          if (-not (Test-Path 'C:\masm32\include')) {
+            $sub = Get-ChildItem 'C:\masm32' -Directory |
+                   Where-Object { Test-Path (Join-Path $_.FullName 'include') } |
+                   Select-Object -First 1
+            if ($sub) {
+              Get-ChildItem $sub.FullName | Move-Item -Destination 'C:\masm32' -Force
+              Remove-Item $sub.FullName -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
 
-          # Retry for transient hangs/flakes
-          $maxAttempts = 3
-          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            try {
-              Write-Host "Installing MASM32 (attempt $attempt/$maxAttempts)..."
-              Install-MasmOnce
-              Write-Host 'MASM32 installation succeeded.'
-              break
-            } catch {
-              Write-Warning $_
-              if ($attempt -eq $maxAttempts) { throw }
-              Start-Sleep -Seconds (15 * $attempt)
-            }
+          if (-not (Test-Path 'C:\masm32\include')) {
+            Write-Host 'C:\masm32 contents (depth 2):'
+            Get-ChildItem 'C:\masm32' -Recurse -Depth 2 | ForEach-Object { Write-Host $_.FullName }
+            throw 'MASM32 include directory not found after extraction'
           }
+          Write-Host 'MASM32 SDK extracted successfully.'
 
       - name: Download Crinkler
         shell: pwsh
