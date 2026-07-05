@@ -1,0 +1,103 @@
+name: Build TinyRetroPad (external source)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout this automation repo
+        uses: actions/checkout@v4
+
+      - name: Clone TinyRetroPad source
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/PlummersSoftwareLLC/TinyRetroPad.git src
+          git -C src log -1 --oneline
+
+      - name: Add Windows Defender exclusion for build directory
+        shell: pwsh
+        run: |
+          # Crinkler-compressed executables can trigger AV false positives; best-effort only
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}\src"
+          } catch {
+            Write-Warning "Could not add Defender exclusion: $_"
+          }
+
+      - name: Install MASM32 SDK (include and lib files)
+        shell: pwsh
+        run: |
+          $zipPath = "$env:TEMP\masm32.zip"
+          Invoke-WebRequest -Uri 'https://masm32.com/download/masm32v11r.zip' -OutFile $zipPath
+          $dlDir = "$env:TEMP\masm32_dl"
+          Expand-Archive -Path $zipPath -DestinationPath $dlDir
+          # The zip contains install.exe - an InnoSetup self-installer
+          $installer = Get-ChildItem -Path $dlDir -Filter 'install*.exe' -Recurse | Select-Object -First 1
+          if (-not $installer) {
+            Write-Error 'Could not find MASM32 installer inside downloaded zip'
+            exit 1
+          }
+          Start-Process -FilePath $installer.FullName `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/DIR=C:\masm32' `
+            -Wait
+          if (-not (Test-Path 'C:\masm32\include')) {
+            Write-Error 'MASM32 include directory not found after install'
+            exit 1
+          }
+
+      - name: Download Crinkler
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod `
+            -Uri 'https://api.github.com/repos/runestubbe/Crinkler/releases/latest' `
+            -Headers @{ Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}" }
+          $asset = $release.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1
+          if (-not $asset) {
+            Write-Error 'Could not find a Crinkler zip asset in the latest release'
+            exit 1
+          }
+          $zipPath = "$env:TEMP\crinkler.zip"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath
+          $extractDir = "$env:TEMP\crinkler_extracted"
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir
+          $crinklerExe = Get-ChildItem -Path $extractDir -Filter 'Crinkler*.exe' -Recurse | Select-Object -First 1
+          if (-not $crinklerExe) {
+            Write-Error 'Could not find Crinkler.exe inside the downloaded zip'
+            exit 1
+          }
+          Copy-Item $crinklerExe.FullName -Destination 'C:\crinkler.exe'
+
+      # MSVC toolchain (including 32-bit ml.exe) is already present on windows-latest
+      - name: Build with MSVC MASM and Crinkler
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            Write-Error 'Could not locate vswhere.exe'
+            exit 1
+          }
+
+          # Use the 32-bit MSVC environment so ml.exe and the x86 libs are on PATH
+          $vcvars = & $vswhere -latest -products * -find 'VC\Auxiliary\Build\vcvars32.bat' | Select-Object -First 1
+          if (-not $vcvars) {
+            Write-Error 'Could not locate vcvars32.bat via vswhere'
+            exit 1
+          }
+
+          # Dynamically pick the newest Windows SDK x86 um lib path
+          $sdkLibBase = 'C:\Program Files (x86)\Windows Kits\10\Lib'
+          $x86LibPath = (Get-ChildItem $sdkLibBase -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1).FullName + '\um\x86'
+
+          cmd /c "call \"$vcvars\" && cd src && ml /nologo /c /coff /Cp /IC:\masm32\include trpad.asm && C:\crinkler.exe trpad.obj /OUT:trpad.exe /ENTRY:MainEntry /SUBSYSTEM:WINDOWS /NOINITIALIZERS /TINYIMPORT /ORDERTRIES:2000 /LIBPATH:\"$x86LibPath\" kernel32.lib user32.lib shell32.lib comdlg32.lib gdi32.lib"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tinyretropad-build
+          path: src\trpad.exe
+          if-no-files-found: error
