@@ -22,6 +22,7 @@ jobs:
         shell: cmd
         run: |
           for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Auxiliary\Build\vcvars64.bat"`) do set VCVARS=%%i
+          if not defined VCVARS (echo ##[error]Could not locate vcvars64.bat via vswhere && exit /b 1)
           call "%VCVARS%"
           cd src
           nmake /f makefile
