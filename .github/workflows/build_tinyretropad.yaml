@@ -30,21 +30,82 @@ jobs:
       - name: Install MASM32 SDK (include and lib files)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+
           $zipPath = "${{ github.workspace }}\tools\masm32v11r.zip"
-          $dlDir = "$env:TEMP\masm32_dl"
-          Expand-Archive -Path $zipPath -DestinationPath $dlDir
-          # The zip contains install.exe - an InnoSetup self-installer
-          $installer = Get-ChildItem -Path $dlDir -Filter 'install*.exe' -Recurse | Select-Object -First 1
-          if (-not $installer) {
-            Write-Error 'Could not find MASM32 installer inside downloaded zip'
+          if (-not (Test-Path $zipPath)) {
+            Write-Error "MASM zip not found at $zipPath"
             exit 1
           }
-          Start-Process -FilePath $installer.FullName `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/DIR=C:\masm32' `
-            -Wait
-          if (-not (Test-Path 'C:\masm32\include')) {
-            Write-Error 'MASM32 include directory not found after install'
-            exit 1
+
+          function Install-MasmOnce {
+            $dlDir = Join-Path $env:TEMP ('masm32_dl_' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $dlDir | Out-Null
+
+            Expand-Archive -Path $zipPath -DestinationPath $dlDir -Force
+
+            # The zip contains install.exe - an InnoSetup self-installer
+            $installer = Get-ChildItem -Path $dlDir -Filter 'install*.exe' -Recurse | Select-Object -First 1
+            if (-not $installer) {
+              throw 'Could not find MASM32 installer inside downloaded zip'
+            }
+
+            $logPath = Join-Path $env:TEMP 'masm32-install.log'
+            if (Test-Path $logPath) { Remove-Item $logPath -Force }
+
+            $args = @(
+              '/VERYSILENT'
+              '/SUPPRESSMSGBOXES'
+              '/NORESTART'
+              '/DIR=C:\masm32'
+              "/LOG=$logPath"
+            )
+
+            $p = Start-Process -FilePath $installer.FullName -ArgumentList $args -PassThru
+
+            # Hard timeout to prevent indefinite hangs
+            $timeoutSec = 600
+            if (-not (Wait-Process -Id $p.Id -Timeout $timeoutSec -ErrorAction SilentlyContinue)) {
+              Write-Warning "MASM installer timed out after $timeoutSec seconds (PID=$($p.Id))."
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              if (Test-Path $logPath) {
+                Write-Host '--- MASM installer log (tail) ---'
+                Get-Content $logPath -Tail 200
+              }
+              throw "MASM installer timeout after $timeoutSec seconds"
+            }
+
+            if ($p.ExitCode -ne 0) {
+              if (Test-Path $logPath) {
+                Write-Host '--- MASM installer log (tail) ---'
+                Get-Content $logPath -Tail 200
+              }
+              throw "MASM installer exited with code $($p.ExitCode)"
+            }
+
+            # Verify install output
+            if (-not (Test-Path 'C:\masm32\include')) {
+              if (Test-Path $logPath) {
+                Write-Host '--- MASM installer log (tail) ---'
+                Get-Content $logPath -Tail 200
+              }
+              throw 'MASM32 include directory not found after install'
+            }
+          }
+
+          # Retry for transient hangs/flakes
+          $maxAttempts = 3
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            try {
+              Write-Host "Installing MASM32 (attempt $attempt/$maxAttempts)..."
+              Install-MasmOnce
+              Write-Host 'MASM32 installation succeeded.'
+              break
+            } catch {
+              Write-Warning $_
+              if ($attempt -eq $maxAttempts) { throw }
+              Start-Sleep -Seconds (15 * $attempt)
+            }
           }
 
       - name: Download Crinkler
