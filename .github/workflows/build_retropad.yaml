@@ -19,15 +19,21 @@ jobs:
 
       # MSVC toolchain is already present on windows-latest
       - name: Build with MSVC nmake
-        shell: cmd
+        shell: pwsh
         run: |
-          setlocal enabledelayedexpansion
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          for /f "usebackq delims=" %%i in (`"!VSWHERE!" -latest -find "VC\Auxiliary\Build\vcvars64.bat"`) do set VCVARS=%%i
-          if not defined VCVARS (echo ##[error]Could not locate vcvars64.bat via vswhere && exit /b 1)
-          call "%VCVARS%"
-          cd src
-          nmake /f makefile
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            Write-Error 'Could not locate vswhere.exe'
+            exit 1
+          }
+
+          $vcvars = & $vswhere -latest -products * -find 'VC\Auxiliary\Build\vcvars64.bat' | Select-Object -First 1
+          if (-not $vcvars) {
+            Write-Error 'Could not locate vcvars64.bat via vswhere'
+            exit 1
+          }
+
+          cmd /c "call ""$vcvars"" && cd src && nmake /f makefile"
 
       - name: Upload binaries/artifacts (optional)
         uses: actions/upload-artifact@v4
