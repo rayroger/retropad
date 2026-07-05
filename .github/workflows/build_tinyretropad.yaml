@@ -27,7 +27,7 @@ jobs:
             Write-Warning "Could not add Defender exclusion: $_"
           }
 
-      - name: Install MASM32 SDK (include and lib files)
+      - name: Install MASM32 SDK (recommended root install path)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -48,33 +48,26 @@ jobs:
             throw 'Could not find MASM32 installer inside downloaded zip'
           }
 
-          # Use 7-Zip to extract the InnoSetup package directly rather than running
-          # the interactive installer, which hangs in headless CI environments.
-          $7z = 'C:\Program Files\7-Zip\7z.exe'
-          if (-not (Test-Path $7z)) {
-            throw '7-Zip not found; cannot extract MASM32 SDK'
+          # MASM32 guidance recommends installing to a root drive path (C:\masm32).
+          # Use unattended installer flags to keep CI non-interactive.
+          $args = @(
+            '/SP-'
+            '/VERYSILENT'
+            '/SUPPRESSMSGBOXES'
+            '/NORESTART'
+            '/DIR=C:\masm32'
+          )
+          $proc = Start-Process -FilePath $installer.FullName -ArgumentList $args -Wait -PassThru
+          if ($proc.ExitCode -ne 0) {
+            throw "MASM32 installer failed with exit code $($proc.ExitCode)"
           }
 
-          New-Item -ItemType Directory -Path 'C:\masm32' -Force | Out-Null
-          & $7z x $installer.FullName -o'C:\masm32' -y | Out-Null
-
-          # 7-Zip may place InnoSetup app files under a subdirectory; normalise if needed
-          if (-not (Test-Path 'C:\masm32\include')) {
-            $sub = Get-ChildItem 'C:\masm32' -Directory |
-                   Where-Object { Test-Path (Join-Path $_.FullName 'include') } |
-                   Select-Object -First 1
-            if ($sub) {
-              Get-ChildItem $sub.FullName | Move-Item -Destination 'C:\masm32' -Force
-              Remove-Item $sub.FullName -Recurse -Force -ErrorAction SilentlyContinue
-            }
-          }
-
-          if (-not (Test-Path 'C:\masm32\include')) {
+          if (-not (Test-Path 'C:\masm32\include') -or -not (Test-Path 'C:\masm32\lib')) {
             Write-Host 'C:\masm32 contents (depth 2):'
             Get-ChildItem 'C:\masm32' -Recurse -Depth 2 | ForEach-Object { Write-Host $_.FullName }
-            throw 'MASM32 include directory not found after extraction'
+            throw 'MASM32 SDK not installed correctly (missing include/lib)'
           }
-          Write-Host 'MASM32 SDK extracted successfully.'
+          Write-Host 'MASM32 SDK installed successfully.'
 
       - name: Download Crinkler
         shell: pwsh
