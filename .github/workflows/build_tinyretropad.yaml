@@ -39,7 +39,7 @@ jobs:
               -DestinationPath $dest `
               -Force
 
-          # ZIP contains masm folder
+          # Handle masm\ folder inside archive
           if (Test-Path "$dest\masm\bin\ml.exe") {
               $dest = "$dest\masm"
           }
@@ -50,11 +50,7 @@ jobs:
           }
 
           if (-not (Test-Path "$dest\include")) {
-              throw "MASM include missing"
-          }
-
-          if (-not (Test-Path "$dest\lib")) {
-              throw "MASM lib missing"
+              throw "MASM include folder missing"
           }
 
           echo "MASM32=$dest" >> $env:GITHUB_ENV
@@ -62,38 +58,31 @@ jobs:
           Write-Host "MASM32 root:"
           Write-Host $dest
 
+          Write-Host "MASM executable:"
+          Get-Item "$dest\bin\ml.exe"
 
-      - name: Locate linker
+
+      - name: Locate Windows SDK x86 libraries
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          # First try MASM32 linker
-          if (Test-Path "$env:MASM32\bin\link.exe") {
-              echo "LINKER=$env:MASM32\bin\link.exe" >> $env:GITHUB_ENV
-              Write-Host "Using MASM32 linker"
-              exit 0
+          $sdk = Get-ChildItem `
+            "C:\Program Files (x86)\Windows Kits\10\Lib" `
+            -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          $winlib = Join-Path $sdk.FullName "um\x86"
+
+          if (-not (Test-Path "$winlib\kernel32.lib")) {
+              throw "Windows SDK x86 libraries not found"
           }
 
-          # Fallback to Visual Studio linker
-          $linker = Get-ChildItem `
-              "C:\Program Files\Microsoft Visual Studio" `
-              -Filter link.exe `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Where-Object {
-                  $_.FullName -match "\\Host.*\\x86\\link.exe"
-              } |
-              Select-Object -First 1
+          echo "WINLIB=$winlib" >> $env:GITHUB_ENV
 
-          if (-not $linker) {
-              throw "No linker found"
-          }
-
-          echo "LINKER=$($linker.FullName)" >> $env:GITHUB_ENV
-
-          Write-Host "Using VS linker:"
-          Write-Host $linker.FullName
+          Write-Host "Windows SDK library path:"
+          Write-Host $winlib
 
 
       - name: Download Crinkler (optional)
@@ -109,11 +98,11 @@ jobs:
                 Select-Object -First 1
 
               if (-not $asset) {
-                  throw "No Crinkler asset"
+                  throw "Crinkler package missing"
               }
 
-              $zip="$env:TEMP\crinkler.zip"
-              $dir="$env:TEMP\crinkler"
+              $zip = "$env:TEMP\crinkler.zip"
+              $dir = "$env:TEMP\crinkler"
 
               Invoke-WebRequest `
                 -Uri $asset.browser_download_url `
@@ -132,12 +121,12 @@ jobs:
 
               if ($exe) {
                   Copy-Item $exe.FullName C:\crinkler.exe
-                  Write-Host "Crinkler enabled"
+                  Write-Host "Crinkler installed"
               }
 
           }
           catch {
-              Write-Warning "Crinkler unavailable"
+              Write-Warning "Crinkler not available"
           }
 
 
@@ -164,7 +153,7 @@ jobs:
 
           if exist C:\crinkler.exe (
 
-              echo Linking with Crinkler
+              echo Using Crinkler
 
               C:\crinkler.exe ^
                 trpad.obj ^
@@ -174,7 +163,7 @@ jobs:
                 /NOINITIALIZERS ^
                 /TINYIMPORT ^
                 /ORDERTRIES:2000 ^
-                /LIBPATH:"%MASM32%\lib" ^
+                /LIBPATH:"%WINLIB%" ^
                 kernel32.lib ^
                 user32.lib ^
                 shell32.lib ^
@@ -183,14 +172,14 @@ jobs:
 
           ) else (
 
-              echo Linking with Microsoft linker
+              echo Using Microsoft linker
 
               "%LINKER%" ^
                 /SUBSYSTEM:WINDOWS ^
                 /ENTRY:MainEntry ^
                 /OUT:trpad.exe ^
                 trpad.obj ^
-                /LIBPATH:"%MASM32%\lib" ^
+                /LIBPATH:"%WINLIB%" ^
                 kernel32.lib ^
                 user32.lib ^
                 shell32.lib ^
@@ -201,13 +190,13 @@ jobs:
           if errorlevel 1 exit /b 1
 
 
-      - name: Verify executable
+      - name: Verify output
         shell: cmd
         run: |
           dir src\trpad.exe
 
 
-      - name: Upload artifact
+      - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: TinyRetroPad
