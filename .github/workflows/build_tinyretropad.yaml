@@ -20,12 +20,15 @@ jobs:
           git clone --depth 1 https://github.com/PlummersSoftwareLLC/TinyRetroPad.git src
           git -C src log -1 --oneline
 
-      - name: Setup MSVC environment
+      - name: Setup MSVC x86 environment
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
 
       - name: Verify MASM toolchain
         shell: cmd
         run: |
+          echo PATH=%PATH%
           where ml
           ml /?
 
