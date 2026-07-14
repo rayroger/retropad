@@ -14,139 +14,133 @@ jobs:
       - name: Checkout automation repo
         uses: actions/checkout@v4
 
+
       - name: Clone TinyRetroPad source
         shell: pwsh
         run: |
           git clone --depth 1 https://github.com/PlummersSoftwareLLC/TinyRetroPad.git src
           git -C src log -1 --oneline
 
-      - name: Setup MSVC x86 environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x86
-
-      - name: Verify MASM toolchain
-        shell: cmd
-        run: |
-          echo PATH=%PATH%
-          where ml
-          ml /?
-
-      - name: Install 7-Zip
-        shell: pwsh
-        run: |
-          choco install 7zip -y
 
       - name: Extract MASM32 SDK
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = "Stop"
 
-          $zipPath = "${{ github.workspace }}\tools\masm32v11r.zip"
-          $wrapperDir = "$env:TEMP\masm32_wrapper"
-          $masmDir = "$env:TEMP\masm32"
+          $zip = "${{ github.workspace }}\tools\masm.zip"
+          $dest = "$env:TEMP\masm32"
 
-          if (-not (Test-Path $zipPath)) {
-            throw "MASM32 archive not found: $zipPath"
+          if (-not (Test-Path $zip)) {
+              throw "MASM archive not found: $zip"
           }
 
           Expand-Archive `
-            -Path $zipPath `
-            -DestinationPath $wrapperDir `
-            -Force
+              -Path $zip `
+              -DestinationPath $dest `
+              -Force
 
-          $installer = Join-Path $wrapperDir "install.exe"
-
-          if (-not (Test-Path $installer)) {
-            throw "MASM32 install.exe not found"
+          # Handle possible extra folder level
+          if (Test-Path "$dest\masm\bin\ml.exe") {
+              $dest = "$dest\masm"
           }
 
-          7z x `
-            $installer `
-            "-o$masmDir" `
-            -y
-
-          if (-not (Test-Path "$masmDir\include")) {
-            throw "MASM32 include directory missing"
+          if (-not (Test-Path "$dest\bin\ml.exe")) {
+              Get-ChildItem $dest -Recurse -Depth 3
+              throw "MASM32 ml.exe not found"
           }
 
-          if (-not (Test-Path "$masmDir\lib")) {
-            throw "MASM32 lib directory missing"
+          if (-not (Test-Path "$dest\include")) {
+              throw "MASM32 include directory missing"
           }
 
-          Write-Host "MASM32 extracted successfully"
-          Write-Host "Include:"
-          Get-ChildItem "$masmDir\include" | Select-Object -First 10
+          if (-not (Test-Path "$dest\lib")) {
+              throw "MASM32 lib directory missing"
+          }
+
+          echo "MASM32=$dest" >> $env:GITHUB_ENV
+
+          Write-Host "Using MASM32:"
+          Write-Host $dest
+          & "$dest\bin\ml.exe" /?
+
 
       - name: Download Crinkler
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = "Stop"
 
           $release = Invoke-RestMethod `
-            -Uri 'https://api.github.com/repos/runestubbe/Crinkler/releases/latest'
+            -Uri "https://api.github.com/repos/runestubbe/Crinkler/releases/latest"
 
           $asset = $release.assets |
-            Where-Object { $_.name -like '*.zip' } |
-            Select-Object -First 1
+              Where-Object { $_.name -like "*.zip" } |
+              Select-Object -First 1
 
           if (-not $asset) {
-            throw "Crinkler ZIP not found"
+              throw "Crinkler zip not found"
           }
 
           $zip = "$env:TEMP\crinkler.zip"
           $dir = "$env:TEMP\crinkler"
 
           Invoke-WebRequest `
-            -Uri $asset.browser_download_url `
-            -OutFile $zip
+              -Uri $asset.browser_download_url `
+              -OutFile $zip
 
           Expand-Archive `
-            -Path $zip `
-            -DestinationPath $dir `
-            -Force
+              -Path $zip `
+              -DestinationPath $dir `
+              -Force
 
           $exe = Get-ChildItem `
-            -Path $dir `
-            -Filter "Crinkler*.exe" `
-            -Recurse |
-            Select-Object -First 1
+              -Path $dir `
+              -Filter "Crinkler*.exe" `
+              -Recurse |
+              Select-Object -First 1
 
           if (-not $exe) {
-            throw "Crinkler.exe not found"
+              throw "Crinkler.exe not found"
           }
 
-          Copy-Item $exe.FullName C:\crinkler.exe
+          Copy-Item $exe.FullName "C:\crinkler.exe"
 
           Write-Host "Crinkler installed"
+
 
       - name: Build TinyRetroPad
         shell: cmd
         run: |
           cd src
 
-          ml ^
-            /nologo ^
-            /c ^
-            /coff ^
-            /Cp ^
-            /IC:\Users\runneradmin\AppData\Local\Temp\masm32\include ^
-            trpad.asm
+          "%MASM32%\bin\ml.exe" ^
+              /nologo ^
+              /c ^
+              /coff ^
+              /Cp ^
+              /I"%MASM32%\include" ^
+              trpad.asm
 
           C:\crinkler.exe ^
-            trpad.obj ^
-            /OUT:trpad.exe ^
-            /ENTRY:MainEntry ^
-            /SUBSYSTEM:WINDOWS ^
-            /NOINITIALIZERS ^
-            /TINYIMPORT ^
-            /ORDERTRIES:2000 ^
-            /LIBPATH:C:\Users\runneradmin\AppData\Local\Temp\masm32\lib ^
-            kernel32.lib ^
-            user32.lib ^
-            shell32.lib ^
-            comdlg32.lib ^
-            gdi32.lib
+              trpad.obj ^
+              /OUT:trpad.exe ^
+              /ENTRY:MainEntry ^
+              /SUBSYSTEM:WINDOWS ^
+              /NOINITIALIZERS ^
+              /TINYIMPORT ^
+              /ORDERTRIES:2000 ^
+              /LIBPATH:"%MASM32%\lib" ^
+              kernel32.lib ^
+              user32.lib ^
+              shell32.lib ^
+              comdlg32.lib ^
+              gdi32.lib
+
+
+      - name: Verify output
+        shell: cmd
+        run: |
+          dir src\trpad.exe
+
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
