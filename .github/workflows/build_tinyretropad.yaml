@@ -11,7 +11,7 @@ jobs:
 
     steps:
 
-      - name: Checkout automation repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
 
@@ -39,111 +39,175 @@ jobs:
               -DestinationPath $dest `
               -Force
 
-          # Handle possible extra folder level
+          # ZIP contains masm folder
           if (Test-Path "$dest\masm\bin\ml.exe") {
               $dest = "$dest\masm"
           }
 
           if (-not (Test-Path "$dest\bin\ml.exe")) {
               Get-ChildItem $dest -Recurse -Depth 3
-              throw "MASM32 ml.exe not found"
+              throw "MASM ml.exe not found"
           }
 
           if (-not (Test-Path "$dest\include")) {
-              throw "MASM32 include directory missing"
+              throw "MASM include missing"
           }
 
           if (-not (Test-Path "$dest\lib")) {
-              throw "MASM32 lib directory missing"
+              throw "MASM lib missing"
           }
 
           echo "MASM32=$dest" >> $env:GITHUB_ENV
 
-      - name: Verify MASM
-        shell: cmd
-        run: |
-          "%MASM32%\bin\ml.exe" /?
+          Write-Host "MASM32 root:"
+          Write-Host $dest
 
 
-      - name: Download Crinkler
+      - name: Locate linker
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          $release = Invoke-RestMethod `
-            -Uri "https://api.github.com/repos/runestubbe/Crinkler/releases/latest"
-
-          $asset = $release.assets |
-              Where-Object { $_.name -like "*.zip" } |
-              Select-Object -First 1
-
-          if (-not $asset) {
-              throw "Crinkler zip not found"
+          # First try MASM32 linker
+          if (Test-Path "$env:MASM32\bin\link.exe") {
+              echo "LINKER=$env:MASM32\bin\link.exe" >> $env:GITHUB_ENV
+              Write-Host "Using MASM32 linker"
+              exit 0
           }
 
-          $zip = "$env:TEMP\crinkler.zip"
-          $dir = "$env:TEMP\crinkler"
-
-          Invoke-WebRequest `
-              -Uri $asset.browser_download_url `
-              -OutFile $zip
-
-          Expand-Archive `
-              -Path $zip `
-              -DestinationPath $dir `
-              -Force
-
-          $exe = Get-ChildItem `
-              -Path $dir `
-              -Filter "Crinkler*.exe" `
-              -Recurse |
+          # Fallback to Visual Studio linker
+          $linker = Get-ChildItem `
+              "C:\Program Files\Microsoft Visual Studio" `
+              -Filter link.exe `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                  $_.FullName -match "\\Host.*\\x86\\link.exe"
+              } |
               Select-Object -First 1
 
-          if (-not $exe) {
-              throw "Crinkler.exe not found"
+          if (-not $linker) {
+              throw "No linker found"
           }
 
-          Copy-Item $exe.FullName "C:\crinkler.exe"
+          echo "LINKER=$($linker.FullName)" >> $env:GITHUB_ENV
 
-          Write-Host "Crinkler installed"
+          Write-Host "Using VS linker:"
+          Write-Host $linker.FullName
 
 
-      - name: Build TinyRetroPad
+      - name: Download Crinkler (optional)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          try {
+              $release = Invoke-RestMethod `
+                -Uri "https://api.github.com/repos/runestubbe/Crinkler/releases/latest"
+
+              $asset = $release.assets |
+                Where-Object { $_.name -like "*.zip" } |
+                Select-Object -First 1
+
+              if (-not $asset) {
+                  throw "No Crinkler asset"
+              }
+
+              $zip="$env:TEMP\crinkler.zip"
+              $dir="$env:TEMP\crinkler"
+
+              Invoke-WebRequest `
+                -Uri $asset.browser_download_url `
+                -OutFile $zip
+
+              Expand-Archive `
+                -Path $zip `
+                -DestinationPath $dir `
+                -Force
+
+              $exe = Get-ChildItem `
+                $dir `
+                -Filter "Crinkler*.exe" `
+                -Recurse |
+                Select-Object -First 1
+
+              if ($exe) {
+                  Copy-Item $exe.FullName C:\crinkler.exe
+                  Write-Host "Crinkler enabled"
+              }
+
+          }
+          catch {
+              Write-Warning "Crinkler unavailable"
+          }
+
+
+      - name: Assemble TinyRetroPad
         shell: cmd
         run: |
           cd src
 
           "%MASM32%\bin\ml.exe" ^
-              /nologo ^
-              /c ^
-              /coff ^
-              /Cp ^
-              /I"%MASM32%\include" ^
-              trpad.asm
+            /nologo ^
+            /c ^
+            /coff ^
+            /Cp ^
+            /I"%MASM32%\include" ^
+            trpad.asm
 
-          C:\crinkler.exe ^
-              trpad.obj ^
-              /OUT:trpad.exe ^
-              /ENTRY:MainEntry ^
-              /SUBSYSTEM:WINDOWS ^
-              /NOINITIALIZERS ^
-              /TINYIMPORT ^
-              /ORDERTRIES:2000 ^
-              /LIBPATH:"%MASM32%\lib" ^
-              kernel32.lib ^
-              user32.lib ^
-              shell32.lib ^
-              comdlg32.lib ^
-              gdi32.lib
+          if errorlevel 1 exit /b 1
 
 
-      - name: Verify output
+      - name: Link TinyRetroPad
+        shell: cmd
+        run: |
+          cd src
+
+          if exist C:\crinkler.exe (
+
+              echo Linking with Crinkler
+
+              C:\crinkler.exe ^
+                trpad.obj ^
+                /OUT:trpad.exe ^
+                /ENTRY:MainEntry ^
+                /SUBSYSTEM:WINDOWS ^
+                /NOINITIALIZERS ^
+                /TINYIMPORT ^
+                /ORDERTRIES:2000 ^
+                /LIBPATH:"%MASM32%\lib" ^
+                kernel32.lib ^
+                user32.lib ^
+                shell32.lib ^
+                comdlg32.lib ^
+                gdi32.lib
+
+          ) else (
+
+              echo Linking with Microsoft linker
+
+              "%LINKER%" ^
+                /SUBSYSTEM:WINDOWS ^
+                /ENTRY:MainEntry ^
+                /OUT:trpad.exe ^
+                trpad.obj ^
+                /LIBPATH:"%MASM32%\lib" ^
+                kernel32.lib ^
+                user32.lib ^
+                shell32.lib ^
+                comdlg32.lib ^
+                gdi32.lib
+          )
+
+          if errorlevel 1 exit /b 1
+
+
+      - name: Verify executable
         shell: cmd
         run: |
           dir src\trpad.exe
 
 
-      - name: Upload executable
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: TinyRetroPad
