@@ -59,9 +59,10 @@ jobs:
 
           echo "MASM32=$dest" >> $env:GITHUB_ENV
 
-          Write-Host "Using MASM32:"
-          Write-Host $dest
-          & "$dest\bin\ml.exe" /?
+      - name: Verify MASM
+        shell: cmd
+        run: |
+          "%MASM32%\bin\ml.exe" /?
 
 
       - name: Download Crinkler
